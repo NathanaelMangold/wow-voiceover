@@ -11,3 +11,4 @@ requests==2.28.2
 SLPP==1.2.3
 tqdm==4.65.0
 cryptography
+beautifulsoup4==4.12.2

@@ -10,6 +10,8 @@ from tts_cli.consts import RACE_DICT, GENDER_DICT
 from tts_cli.length_table import write_sound_length_table_lua
 from tts_cli.utils import get_first_n_words, get_last_n_words, replace_dollar_bs_with_space
 from slpp import slpp as lua
+from bs4 import BeautifulSoup
+import requests
 
 # TODO: make module name a cli arg when we do other expansions
 MODULE_NAME = 'AI_VoiceOverData_Vanilla'
@@ -18,6 +20,98 @@ SOUND_OUTPUT_FOLDER =  OUTPUT_FOLDER + '/sounds'
 DATAMODULE_TABLE_GUARD_CLAUSE = 'if not VoiceOver or not VoiceOver.DataModules then return end'
 REPLACE_DICT = {'$b': '\n', '$B': '\n', '$n': 'adventurer', '$N': 'Adventurer',
                 '$C': 'Adventurer', '$c': 'adventurer', '$R': 'Traveler', '$r': 'traveler'}
+
+
+def get_quest_info(quest_id :int) -> dict:
+    print("Get Quest Info: " + str(quest_id))
+    # German Constants
+    quest_description_german = "Beschreibung"
+    quest_complete_description_german = "Vervollständigung"
+
+    # URL
+    base_url = "https://www.wowhead.com/wotlk/de/quest="
+    #quest_id = 7876
+    #quest_id = 160
+    #quest_id = 12512
+    url = base_url + str(quest_id)
+
+
+    result = requests.get(url)
+    website_txt = result.text.replace("<br>", "").replace("</br>", "").replace("<br/>", "").replace("<br />", "")
+    doc = BeautifulSoup(website_txt, "html.parser")
+
+    exists = doc.find(class_="database-detail-page-not-found-message")
+    if exists != None:
+        print("Quest with id " + str(quest_id) + " does not exist")
+        return {
+            "success" : False
+        }
+
+    # Format Special Characters
+    format_characters = {
+        "<Name>" : "$N",
+        "<Klasse>" : "$C",
+        "<seinen Kampfgenossen/seine Kampfgenossin>" : "$gbrothers:sisters",
+        "<Volk>":"$r",
+    }
+
+    # Get Quest Title
+    quest_title_class = "heading-size-1"
+    title_html = doc.find(class_=quest_title_class)
+    quest_title = title_html.contents[0]
+    #print("Quest Title: " + quest_title)
+
+    # Get Description
+    quest_description = ""
+    if doc.find(string=quest_complete_description_german):
+        description_path_begin = "h2.heading-size-3:nth-of-type(1)"
+        description_path_end = "h2.heading-size-3:nth-of-type(2)"
+
+        description_begin_title = doc.select_one(description_path_begin)
+        description_end_title = doc.select_one(description_path_end)
+
+        text_elements = []
+        current_element = description_begin_title.next_siblings
+
+        for sibling in current_element:
+            # Is next Chapter we do not want
+            if sibling == description_end_title:
+                break
+
+            text = ""
+            if isinstance(sibling, str):
+                text = sibling.strip()
+            else:
+                text = sibling.get_text(strip=True)
+            
+            if text:
+                text_elements.append(text)
+
+        quest_description = " ".join(text_elements)
+    else:
+        description_path_begin = "h2.heading-size-3:nth-of-type(1)"
+
+        description_begin_title = doc.select_one(description_path_begin)
+
+        quest_description = description_begin_title.next_sibling
+
+    #print("Quest Description: " + quest_description)
+
+    # Complete Quest Description
+    quest_complete_description_class = "lknlksndgg-completion"
+    complete_description_html = doc.find(id=quest_complete_description_class)
+    quest_complete_description = ""
+    if complete_description_html:
+        quest_complete_description = complete_description_html.get_text(separator=" ")
+
+    #print("Quest Complete Description: " + quest_complete_description)
+
+    return {
+        "title" : quest_title,
+        "description" : quest_description,
+        "complete_description" : quest_complete_description,
+        "success" : True
+    }
 
 def get_hash(text):
     hash_object = hashlib.md5(text.encode())
@@ -273,6 +367,8 @@ class TTSProcessor:
     def write_quest_id_lookup(self, df, module_name):
         output_file = OUTPUT_FOLDER + "/quest_id_lookups.lua"
         quest_id_table = {}
+        output_file_de = OUTPUT_FOLDER + "/quest_id_lookups_deDE.lua"
+        quest_id_table_de = {}
 
         quest_df = df[df['quest'] != '']
 
@@ -282,6 +378,15 @@ class TTSProcessor:
                 continue
 
             quest_id = int(row['quest'])
+
+            de_result = get_quest_info(quest_id)
+
+            if de_result["success"] == False:
+                continue
+
+            quest_title_de = de_result["title"]
+            quest_text_de = de_result["description"]
+
             quest_title = row['quest_title']
             quest_text = get_first_n_words(row['text'], 15) + ' ' +  get_last_n_words(row['text'], 15)
             escaped_quest_text = replace_dollar_bs_with_space(quest_text.replace('"', '\'').replace('\r',' ').replace('\n',' '))
@@ -302,12 +407,33 @@ class TTSProcessor:
             if quest_text not in quest_id_table[quest_source][escaped_quest_title][escaped_npc_name]:
                 quest_id_table[quest_source][escaped_quest_title][escaped_npc_name][escaped_quest_text] = quest_id
 
+            # German
+            if quest_source not in quest_id_table_de:
+                quest_id_table_de[quest_source] = {}
+
+            if quest_title_de not in quest_id_table_de[quest_source]:
+                quest_id_table_de[quest_source][quest_title_de] = {}
+
+            if escaped_npc_name not in quest_id_table_de[quest_source][quest_title_de]:
+                quest_id_table_de[quest_source][quest_title_de][escaped_npc_name] = {}
+
+            if quest_text_de not in quest_id_table_de[quest_source][quest_title_de][escaped_npc_name]:
+                quest_id_table_de[quest_source][quest_title_de][escaped_npc_name][quest_text_de] = quest_id
+
         pruned_quest_id_table = prune_quest_id_table(quest_id_table)
+
+        pruned_quest_id_table_de = prune_quest_id_table(quest_id_table_de)
 
         with open(output_file, "w") as f:
             f.write(DATAMODULE_TABLE_GUARD_CLAUSE + "\n")
             f.write(f"{module_name}.QuestIDLookup = ")
             f.write(lua.encode(pruned_quest_id_table))
+            f.write("\n")
+
+        with open(output_file_de, "w") as f:
+            f.write(DATAMODULE_TABLE_GUARD_CLAUSE + "\n")
+            f.write(f"{module_name}.QuestIDLookup = ")
+            f.write(lua.encode(pruned_quest_id_table_de))
             f.write("\n")
 
 
@@ -345,8 +471,8 @@ class TTSProcessor:
 
     def generate_lookup_tables(self, df):
         self.create_output_dirs()
-        self.write_gossip_file_lookups_table(df, MODULE_NAME, 'creature',   'GossipLookupByNPCID',    'npc_gossip_file_lookups')
-        self.write_gossip_file_lookups_table(df, MODULE_NAME, 'gameobject', 'GossipLookupByObjectID', 'object_gossip_file_lookups')
+        #self.write_gossip_file_lookups_table(df, MODULE_NAME, 'creature',   'GossipLookupByNPCID',    'npc_gossip_file_lookups')
+        #self.write_gossip_file_lookups_table(df, MODULE_NAME, 'gameobject', 'GossipLookupByObjectID', 'object_gossip_file_lookups')
 
         self.write_quest_id_lookup(df, MODULE_NAME)
         print("Finished writing quest_id_lookups.lua")

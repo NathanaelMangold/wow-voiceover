@@ -130,7 +130,6 @@ def interactive_mode():
     df = tts_processor.preprocess_dataframe(df)
     tts_processor.tts_dataframe(df, selected_voice_names)
 
-
 if args.mode == "init-db":
     download_and_extract_latest_db_dump()
     import_sql_files_to_database()
